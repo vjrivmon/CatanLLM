@@ -236,6 +236,12 @@ class LLMAgent(AgentInterface):
         if len(self.development_cards_hand.hand) and random.randint(0, 1):
             return self.development_cards_hand.select_card(0)
 
+        # Optimización: si no tenemos 4+ de ningún recurso, no tiene sentido preguntar al LLM
+        res = self.hand.resources
+        can_trade = any(v >= 4 for v in [res.cereal, res.mineral, res.clay, res.wood, res.wool])
+        if not can_trade:
+            return None
+
         game_state = self._get_game_state_text()
         prompt = PromptBuilder.commerce_phase(game_state)
         result = self._ask_llm(prompt)
