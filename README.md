@@ -2,144 +2,223 @@
 
 **LLM plays Catan in real-time — benchmarking small language models for strategic game decisions.**
 
-Built on top of [PyCatan](https://github.com/kjaimez/PyCatan) simulator. The LLM plays turn-by-turn, receiving the board state as text and deciding each action via an Ollama-served model.
+Built on top of [PyCatan](https://github.com/kjaimez/PyCatan) simulator. The LLM plays turn-by-turn: receives the board state as text → reasons → executes action.
 
-## What this is
+## ¿Por qué esto importa?
 
-Traditional AI for Catan uses genetic algorithms or hand-crafted heuristics — they train offline and replay a pre-computed strategy. This project is different:
+Los agentes clásicos de Catan (genéticos, MCTS) entrenan offline durante horas y reproducen estrategias fijas. Este proyecto pregunta algo diferente:
 
-**The LLM plays live.** Every single turn:
-1. The game state is encoded as natural language
-2. The LLM receives it and decides: build a road? Buy a card? Trade?
-3. The response (JSON) is parsed and executed
-4. We measure how long that takes
+> ¿Puede un LLM pequeño (3B-14B) jugar Catan en tiempo real, turno a turno, razonando solo desde la descripción del estado?
 
-**The key question:** Are small models (starting with Qwen 2.5 3B-7B) fast and coherent enough to play a full game of Catan in real-time on consumer hardware?
+**Resultado inicial (CPU-only, servidor sin GPU):**
+- Modelo: `qwen2.5:7b-instruct-q2_K` (3GB)
+- **El LLM ganó** la primera partida contra 3 RandomAgents
+- 0 fallbacks — JSON válido en cada decisión
+- 15.6s/decisión (CPU-only; con RTX 4070 → ~0.3s)
 
-## Architecture
+---
+
+## Setup rápido (tu máquina con GPU)
+
+### 1. Clonar repos
+
+```bash
+mkdir ~/catan-workspace && cd ~/catan-workspace
+git clone https://github.com/kjaimez/PyCatan.git      # lógica del juego
+git clone https://github.com/vjrivmon/CatanLLM.git    # este proyecto
+cd CatanLLM
+```
+
+### 2. Instalar Ollama
+
+```bash
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama serve &   # arrancar en background
+```
+
+Ollama detecta CUDA automáticamente. Con RTX 4070 (12GB VRAM) puedes correr hasta modelos 14B en Q4.
+
+### 3. Bajar modelos
+
+```bash
+# Recomendado para empezar (rápido y bueno)
+ollama pull qwen2.5:7b-instruct-q4_K_M      # 5.2GB VRAM, ~0.3s/decisión
+
+# Más capaz (cabe en 12GB)
+ollama pull qwen2.5:14b-instruct-q4_K_M     # 9.5GB VRAM, ~0.6s/decisión
+
+# Alternativas para comparar
+ollama pull llama3.1:8b-instruct-q4_K_M
+ollama pull mistral:7b-instruct-q4_K_M
+ollama pull glm4:9b                          # más cercano a GLM-5 disponible
+ollama pull deepseek-r1:8b                   # con razonamiento explícito
+
+# Ver instalados
+ollama list
+```
+
+### 4. Instalar dependencia Python
+
+```bash
+pip install requests
+```
+
+### 5. Ajustar rutas (si PyCatan no está en `../PyCatan`)
+
+Edita la variable de ruta en `agents/LLMAgent.py` y `benchmark/runner.py`:
+```python
+sys.path.insert(0, '/ruta/a/tu/PyCatan')     # línea ~10
+sys.path.insert(0, '/ruta/a/tu/CatanLLM')    # línea ~11
+```
+
+---
+
+## Uso
+
+### Partida individual
+
+```bash
+# LLM (P0) vs 3 RandomAgents
+python scripts/run_game.py --model qwen2.5:7b-instruct-q4_K_M
+
+# Dry run — sin LLM, solo prueba la integración
+python scripts/run_game.py --dry-run
+
+# Varias partidas
+python scripts/run_game.py --model qwen2.5:7b-instruct-q4_K_M --games 5
+
+# Limitar rondas (útil para pruebas rápidas)
+python scripts/run_game.py --model qwen2.5:3b --rounds 30
+```
+
+### Benchmark multi-modelo
+
+```bash
+# Auto-detecta los modelos instalados y los compara
+python scripts/multi_model_benchmark.py
+
+# Especificar modelos concretos
+python scripts/multi_model_benchmark.py \
+  --models qwen2.5:7b-instruct-q4_K_M qwen2.5:14b-instruct-q4_K_M llama3.1:8b \
+  --games 3 --rounds 80
+
+# Con baseline aleatorio
+python scripts/multi_model_benchmark.py --include-dry-run
+
+# Guardar resultados
+python scripts/multi_model_benchmark.py --output results/mi_benchmark.json
+```
+
+**Salida del benchmark:**
+
+```
+═══════════════════════════════════════════════════════════════════════════
+  BENCHMARK MULTI-MODELO — TABLA COMPARATIVA
+═══════════════════════════════════════════════════════════════════════════
+  Modelo                              Victorias   Avg(s)  Max(s)  Fallback
+───────────────────────────────────────────────────────────────────────────
+  qwen2.5:14b-instruct-q4_K_M         67% (2/3)   0.61s   1.20s      0.0%
+  qwen2.5:7b-instruct-q4_K_M          50% (1/2)   0.31s   0.82s      0.0%
+  llama3.1:8b-instruct-q4_K_M         33% (1/3)   0.44s   1.10s      1.2%
+  mistral:7b-instruct-q4_K_M          33% (1/3)   0.38s   0.90s      3.4%
+═══════════════════════════════════════════════════════════════════════════
+  🏆 Mejor modelo: qwen2.5:14b-instruct-q4_K_M
+```
+*(Valores ilustrativos — los reales los medirás tú con GPU)*
+
+### Tests
+
+```bash
+python tests/test_llm_agent.py   # 15 tests, no requiere Ollama
+```
+
+---
+
+## Arquitectura
 
 ```
 CatanLLM/
 ├── agents/
-│   └── LLMAgent.py         # Extends PyCatan's AgentInterface. Core LLM player.
+│   └── LLMAgent.py         # Extiende AgentInterface de PyCatan (10 métodos)
 ├── llm/
-│   ├── client.py           # Ollama REST client (localhost:11434)
-│   ├── prompts.py          # Prompt templates per game phase + JSON parser
-│   └── state_encoder.py    # Board state → natural language
+│   ├── client.py           # OllamaClient — REST wrapper localhost:11434
+│   ├── prompts.py          # Prompts por fase + parser JSON robusto
+│   └── state_encoder.py    # Estado del tablero → texto natural
 ├── benchmark/
-│   ├── runner.py           # Run games, extract metrics
-│   └── metrics.py          # GameMetrics, BenchmarkSummary dataclasses
+│   ├── runner.py           # BenchmarkRunner — orquesta partidas con métricas
+│   └── metrics.py          # GameMetrics, BenchmarkSummary
 ├── scripts/
-│   ├── install_model.sh    # Install Ollama + pull best model for available RAM
-│   └── run_game.py         # CLI to run games
+│   ├── run_game.py         # CLI: una o varias partidas
+│   ├── multi_model_benchmark.py  # Comparar múltiples modelos
+│   └── install_model.sh    # Instala Ollama + mejor modelo por RAM disponible
+├── docs/
+│   └── GPU_SETUP.md        # Guía detallada setup GPU
 └── tests/
-    └── test_llm_agent.py   # Unit tests (work without Ollama via dry_run)
+    └── test_llm_agent.py   # Tests unitarios (dry_run, sin Ollama)
 ```
 
-PyCatan is a dependency at `../PyCatan/` — not modified, used as-is.
+---
 
-## Quick start
+## Cómo funciona
 
-### 1. Install Ollama + model
-```bash
-bash scripts/install_model.sh
-```
-The script auto-detects available RAM and downloads the best fitting model:
-- **>6GB RAM** → `qwen2.5:7b-instruct-q4_K_M` (5.2GB, best quality)
-- **4-6GB RAM** → `qwen2.5:7b-instruct-q2_K` (2.9GB, good quality)
-- **2.5-4GB RAM** → `qwen2.5:3b-instruct` (1.9GB, fast)
-- **<2.5GB RAM** → `qwen2.5:1.5b-instruct` (1GB, minimal)
+### Cada turno del LLM
 
-### 2. Run a game
-```bash
-# LLM (P0) vs 3 Random agents
-python scripts/run_game.py
+1. **StateEncoder** describe el tablero: recursos, edificios, puntos, acciones posibles
+2. **PromptBuilder** genera un prompt específico para la fase del juego
+3. **OllamaClient** llama al modelo local (POST /api/generate)
+4. La respuesta JSON se parsea y valida
+5. Si falla/timeout → fallback aleatorio (tasa registrada)
 
-# Specify model
-python scripts/run_game.py --model qwen2.5:7b-instruct-q2_K
+### Prompts por fase
 
-# Dry run (no LLM, tests the integration logic)
-python scripts/run_game.py --dry-run
+| Fase | Pregunta al LLM | JSON esperado |
+|------|-----------------|---------------|
+| `on_build_phase` | ¿Qué construir? | `{"action": "town/city/road/card/none", "node_id": int, "road_to": int}` |
+| `on_commerce_phase` | ¿Comerciar? | `{"gives": 0-4, "receives": 0-4}` o `{"action": "skip"}` |
+| `on_moving_thief` | ¿Dónde el ladrón? | `{"terrain": 0-18, "player": int}` |
+| `on_game_start` | ¿Dónde el primer pueblo? | `{"node_id": int, "road_to": int}` |
+| Cards | Monopolio, año abundancia, etc. | JSON específico por carta |
 
-# Run 5 games benchmark
-python scripts/run_game.py --games 5
-```
+---
 
-### 3. Run tests
-```bash
-cd /root/.openclaw/workspace
-python -m pytest CatanLLM/tests/ -v
-# Or without pytest:
-python CatanLLM/tests/test_llm_agent.py
-```
+## Resultados primera prueba (CPU-only)
 
-## How it works
+| Métrica | Valor |
+|---------|-------|
+| Hardware | AMD EPYC, 7.6GB RAM, sin GPU |
+| Modelo | qwen2.5:7b-instruct-q2_K (3GB) |
+| Resultado | **LLM ganó** vs 3 RandomAgents |
+| Decisiones LLM | 31 |
+| Fallbacks | 0 (0%) |
+| Avg decisión | 15.6s (cold: 19s, warm: 8-25s) |
+| Tiempo partida | 483s (~8 min, 20 rondas) |
 
-### Game phases → LLM prompts
+**Con RTX 4070:** esperar ~0.3-0.8s/decisión → partida completa en 2-5 min.
 
-Each PyCatan game phase maps to a specific prompt:
+---
 
-| Phase | Prompt asks | Expected JSON |
-|-------|-------------|---------------|
-| `on_build_phase` | What to build? | `{"action": "town/city/road/card/none", "node_id": int, "road_to": int}` |
-| `on_commerce_phase` | Trade? | `{"gives": 0-4, "receives": 0-4}` or `{"action": "skip"}` |
-| `on_moving_thief` | Where to move thief? | `{"terrain": 0-18, "player": -1 or id}` |
-| `on_game_start` | Where to place first settlement? | `{"node_id": int, "road_to": int}` |
-| `on_monopoly_card_use` | Which resource to monopolize? | `{"material": 0-4}` |
-| `on_year_of_plenty_card_use` | Which 2 resources to take? | `{"material": int, "material_2": int}` |
+## Modelos a probar (prioridad)
 
-### Fallback system
+| Modelo | VRAM | Calidad esperada | Por qué |
+|--------|------|-----------------|---------|
+| `qwen2.5:7b-q4_K_M` | 5.2GB | ⭐⭐⭐⭐ | Baseline rápido |
+| `qwen2.5:14b-q4_K_M` | 9.5GB | ⭐⭐⭐⭐⭐ | Mejor calidad en 12GB |
+| `glm4:9b` | 6.0GB | ⭐⭐⭐⭐ | Más cercano a GLM-5 |
+| `deepseek-r1:8b` | 5.2GB | ⭐⭐⭐⭐ | Razonamiento explícito |
+| `llama3.1:8b-q4` | 5.0GB | ⭐⭐⭐ | Comparación |
+| `mistral:7b-q4` | 4.5GB | ⭐⭐⭐ | Comparación |
 
-If the LLM:
-- Takes longer than `--timeout` seconds (default: 30s)
-- Doesn't respond with parseable JSON
-- Raises a connection error
+> **Nota:** GLM-5 no está en el registry de Ollama todavía. `glm4:9b` es la alternativa más cercana disponible. Se actualizará cuando esté disponible.
 
-→ Falls back to a simple random/heuristic decision for that turn. The fallback rate is tracked.
+---
 
-### Metrics captured
-
-```
-Game 1 Summary:
-  Model:          qwen2.5:3b
-  LLM Player:     P0
-  Winner:         P2 (Random won)
-  Total turns:    847
-  Total time:     142.3s
-  LLM decisions:  211
-  Fallbacks:      3 (1.4%)
-  Avg LLM time:   0.42s/decision
-  Max LLM time:   2.1s
-```
-
-## Comparison: LLM vs Genetic Algorithm
-
-| Metric | Genetic Agent | LLM Agent (3B) |
-|--------|--------------|----------------|
-| Setup time | ~hours of training | model pull once |
-| Per-turn latency | <1ms (lookup) | ~0.3-2s |
-| Adaptability | fixed strategy | dynamic reasoning |
-| Explainability | opaque genes | readable prompts |
-
-The genetic agent's `best_chromosome.json` encodes 93 parameters trained over 40K games. The LLM agent has zero prior Catan knowledge — it reasons from the game state description alone.
-
-## Models tested
-
-| Model | Size | Avg decision | Notes |
-|-------|------|--------------|-------|
-| `qwen2.5:3b` | 1.9GB | ~0.4s | Fast, occasionally bad moves |
-| `qwen2.5:7b-q2_K` | 2.9GB | ~0.8s | Better strategy |
-| `qwen2.5:7b-q4_K_M` | 5.2GB | ~1.5s | Best quality |
-
-> GLM-5 8B support coming — currently Ollama registry doesn't include GLM-5. Will add when available.
-
-## Requirements
+## Requisitos
 
 - Python 3.10+
-- [PyCatan](../PyCatan/) at `../PyCatan/`
-- [Ollama](https://ollama.ai) (installed via `scripts/install_model.sh`)
-- `requests` library: `pip install requests`
+- [PyCatan](https://github.com/kjaimez/PyCatan) en `../PyCatan/` (o ajusta la ruta)
+- [Ollama](https://ollama.ai) instalado y corriendo
+- `pip install requests`
 
-## License
+## Licencia
 
 MIT
