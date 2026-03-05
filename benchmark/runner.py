@@ -8,8 +8,8 @@ import sys
 import time
 import logging
 
-sys.path.insert(0, '/root/.openclaw/workspace/PyCatan')
-sys.path.insert(0, '/root/.openclaw/workspace/CatanLLM')
+sys.path.insert(0, '/home/vicente/RoadToDevOps/PyCatan')
+sys.path.insert(0, '/home/vicente/catan-workspace/CatanLLM')
 
 from Managers.GameDirector import GameDirector
 from Agents.RandomAgent import RandomAgent
@@ -73,6 +73,68 @@ class BenchmarkRunner:
                 else:
                     print("⚠️  Ollama disponible pero sin modelos.")
                     print("   Ejecuta: ollama pull qwen2.5:3b")
+
+    def run_single_game_custom(self, agents_classes: list, llm_position: int,
+                               game_id: int = 1, max_rounds: int = 500,
+                               print_outcome: bool = False) -> tuple[GameMetrics, LLMAgent]:
+        """Ejecuta una partida con agentes personalizados y LLM en posición arbitraria."""
+
+        gd = GameDirector(
+            agents=agents_classes,
+            max_rounds=max_rounds,
+            store_trace=False,
+        )
+
+        metrics = GameMetrics(
+            game_id=game_id,
+            llm_player_id=llm_position,
+            model_name=self.model if not self.dry_run else 'dry_run',
+        )
+
+        agent_names = [c.__name__ for c in agents_classes]
+        if self.verbose:
+            mode = 'DRY RUN' if self.dry_run else f'LLM ({self.model})'
+            print(f"\n  Partida {game_id} | {' vs '.join(agent_names)} | MaxRounds={max_rounds}")
+
+        start_time = time.time()
+
+        try:
+            gd.game_start(game_number=game_id, print_outcome=print_outcome)
+        except Exception as e:
+            logger.error(f"Error en partida {game_id}: {e}")
+            if self.verbose:
+                import traceback
+                print(f"  Error en partida: {e}")
+                traceback.print_exc()
+
+        total_time = time.time() - start_time
+
+        # Extraer instancia del LLMAgent
+        llm_instance: LLMAgent = gd.game_manager.agent_manager.players[llm_position]['player']
+
+        # Determinar ganador
+        winner_id = -1
+        players = gd.game_manager.agent_manager.players
+        for p in players:
+            if p.get('victory_points', 0) >= 10:
+                winner_id = p['id']
+                break
+        if winner_id == -1:
+            winner_id = max(players, key=lambda p: p.get('victory_points', 0))['id']
+
+        # Registrar metricas
+        llm_metrics = llm_instance.get_metrics()
+        metrics.llm_decisions = llm_metrics['llm_calls']
+        metrics.fallback_decisions = llm_metrics['fallback_count']
+        metrics.decision_times = list(llm_instance.decision_times)
+        metrics.total_turns = llm_instance.turn_count
+        metrics.finish(winner_id)
+
+        if self.verbose:
+            result_str = 'LLM WON' if metrics.llm_won else f'P{winner_id} won'
+            print(f"    -> {result_str} | {metrics.total_time_s}s | fallback={metrics.fallback_rate*100:.0f}%")
+
+        return metrics, llm_instance
 
     def run_single_game(self, game_id: int = 1, max_rounds: int = 500,
                         print_outcome: bool = False) -> tuple[GameMetrics, LLMAgent]:
