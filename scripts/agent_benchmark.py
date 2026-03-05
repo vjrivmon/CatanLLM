@@ -15,8 +15,11 @@ import time
 import argparse
 from datetime import datetime
 
-sys.path.insert(0, '/home/vicente/RoadToDevOps/PyCatan')
-sys.path.insert(0, '/home/vicente/catan-workspace/CatanLLM')
+import os as _os
+_BASE = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_PYCATAN = _os.path.join(_os.path.dirname(_BASE), 'PyCatan')
+sys.path.insert(0, _PYCATAN)
+sys.path.insert(0, _BASE)
 
 from benchmark.runner import BenchmarkRunner, create_llm_agent_class
 from llm.client import OllamaClient

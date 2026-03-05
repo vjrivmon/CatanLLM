@@ -8,8 +8,11 @@ import sys
 import time
 import logging
 
-sys.path.insert(0, '/home/vicente/RoadToDevOps/PyCatan')
-sys.path.insert(0, '/home/vicente/catan-workspace/CatanLLM')
+import os as _os
+_BASE = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_PYCATAN = _os.path.join(_os.path.dirname(_BASE), 'PyCatan')
+sys.path.insert(0, _PYCATAN)
+sys.path.insert(0, _BASE)
 
 from Managers.GameDirector import GameDirector
 from Agents.RandomAgent import RandomAgent
